@@ -107,7 +107,7 @@ func MigrateToLatest(logentry *log.Entry) (err error) {
 			fullPath = fmt.Sprintf("file://%s/", strings.Trim(migrationsDir, "/"))
 		}
 	}
-
+	//fullPath = "/app/migrations/"
 	logentry.Debugf("full path database: %s", fullPath)
 
 	migrations := Migrations(fullPath)

@@ -264,6 +264,23 @@ func (source *WhatsmeowConnection) DownloadData(imsg whatsapp.IWhatsappMessage) 
 		err = fmt.Errorf("parameter msg cannot be converted to an original message")
 		return
 	}
+	switch {
+	case waMsg.ImageMessage != nil:
+		replaced := strings.Replace(*waMsg.ImageMessage.URL, "mmg", "web", 1)
+		waMsg.ImageMessage.URL = &replaced
+	case waMsg.VideoMessage != nil:
+		replaced := strings.Replace(*waMsg.VideoMessage.URL, "mmg", "web", 1)
+		waMsg.VideoMessage.URL = &replaced
+	case waMsg.AudioMessage != nil:
+		replaced := strings.Replace(*waMsg.AudioMessage.URL, "mmg", "web", 1)
+		waMsg.AudioMessage.URL = &replaced
+	case waMsg.DocumentMessage != nil:
+		replaced := strings.Replace(*waMsg.DocumentMessage.URL, "mmg", "web", 1)
+		waMsg.DocumentMessage.URL = &replaced
+	case waMsg.StickerMessage != nil:
+		replaced := strings.Replace(*waMsg.StickerMessage.URL, "mmg", "web", 1)
+		waMsg.StickerMessage.URL = &replaced
+	}
 
 	data, err = source.Client.DownloadAny(context.TODO(), waMsg)
 	if err != nil {
