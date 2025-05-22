@@ -1,10 +1,10 @@
 # Build stage
-FROM golang:latest as builder
+FROM golang:latest AS builder
 
 WORKDIR /build
 
-COPY /docker/docker-entrypoint.sh .
-COPY /src/ .
+COPY docker/docker-entrypoint.sh .
+COPY ../src/ .
 
 RUN chmod 755 docker-entrypoint.sh
 RUN sed -i 's/\r//' docker-entrypoint.sh
