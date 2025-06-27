@@ -10,8 +10,8 @@ import (
 type WhatsappMessage struct {
 
 	// original message from source service
-	Content        interface{} `json:"-"`
-	InfoForHistory interface{} `json:"-"`
+	Content        any `json:"-"`
+	InfoForHistory any `json:"-"`
 
 	Id      string `json:"id"`                // Upper text msg id
 	TrackId string `json:"trackid,omitempty"` // Optional id of the system that send that message
@@ -130,7 +130,7 @@ func (source *WhatsappMessage) HasAttachment() bool {
 	return attach != nil && len(attach.Mimetype) > 0
 }
 
-func (source *WhatsappMessage) GetSource() interface{} {
+func (source *WhatsappMessage) GetSource() any {
 	return source.Content
 }
 
