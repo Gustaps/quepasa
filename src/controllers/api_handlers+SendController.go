@@ -178,14 +178,17 @@ func Send(server *models.QpWhatsappServer, response *models.QpSendResponse, requ
 		waMsg.Type = whatsapp.TextMessageType
 	}
 
-	if waMsg.Type == whatsapp.UnknownMessageType {
+	// if not set, try to recover "text"
+	if waMsg.Type == whatsapp.UnhandledMessageType {
 		// correct msg type for texts contents
 		if len(waMsg.Text) > 0 {
 			waMsg.Type = whatsapp.TextMessageType
+		} else {
+			err = fmt.Errorf("unknown message type without text")
+			response.ParseError(err)
+			RespondInterface(w, response)
+			return
 		}
-
-		logentry.Errorf("unknown message type: %v", waMsg)
-		// *** implement an error here if not found any knowing type
 	}
 
 	// Checking for ready state
@@ -196,6 +199,50 @@ func Send(server *models.QpWhatsappServer, response *models.QpSendResponse, requ
 		RespondInterfaceCode(w, response, http.StatusServiceUnavailable)
 		return
 	}
+	/* removed for now, now it's possible to send messages to LID directly
+	// Handle LID to phone mapping for sending
+	originalChatId := waMsg.Chat.Id
+	if strings.Contains(waMsg.Chat.Id, "@lid") {
+		logentry.Debugf("LID detected in chat ID: %s, attempting to get phone number", waMsg.Chat.Id)
+
+		phone, err := server.GetPhoneFromLID(waMsg.Chat.Id)
+		if err != nil || len(phone) == 0 {
+			if err != nil {
+				logentry.Warnf("failed to get phone from LID %s: %v, will try sending directly to LID", waMsg.Chat.Id, err)
+			} else {
+				logentry.Warnf("empty phone number returned for LID: %s, will try sending directly to LID", waMsg.Chat.Id)
+			}
+
+			// Try to send directly to LID first
+			sendResponse, err := server.SendMessage(waMsg)
+			if err == nil {
+				// Success sending to LID directly
+				metrics.MessagesSent.Inc()
+
+				result := &models.QpSendResponseMessage{}
+				result.Wid = server.GetWId()
+				result.Id = sendResponse.GetId()
+				result.ChatId = originalChatId
+				result.TrackId = waMsg.TrackId
+
+				response.ParseSuccess(result)
+				RespondInterface(w, response)
+				return
+			}
+
+			// Failed to send to LID, return error
+			logentry.Errorf("failed to find phone number for LID %s and failed to send message to LID: %v", originalChatId, err)
+			metrics.MessageSendErrors.Inc()
+			response.ParseError(fmt.Errorf("failed to resolve LID to phone number and failed to send message to LID: %v", err))
+			RespondInterface(w, response)
+			return
+		}
+
+		// Convert phone to WhatsApp JID format
+		waMsg.Chat.Id = phone + "@s.whatsapp.net"
+		logentry.Debugf("converted LID %s to phone-based chat ID: %s", originalChatId, waMsg.Chat.Id)
+	}
+	*/
 
 	sendResponse, err := server.SendMessage(waMsg)
 	if err != nil {
