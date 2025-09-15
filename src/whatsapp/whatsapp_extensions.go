@@ -5,22 +5,29 @@ import (
 	"regexp"
 	"strings"
 
+	library "github.com/nocodeleaks/quepasa/library"
 	log "github.com/sirupsen/logrus"
 )
 
-var AllowedSuffix = map[string]bool{
-	"g.us":           true, // Group message
-	"s.whatsapp.net": true, // Direct message
-	"lid":            true, // New default suffix for WhatsApp Business API
+// Helper function to convert phone numbers or partial WIDs to full WIDs
+func PhonesToWids(sources []string) []string {
+	result := make([]string, len(sources))
+
+	for i, item := range sources {
+		result[i] = PhoneToWid(item)
+	}
+
+	return result
 }
 
+// PhoneToWid converts a phone number to a WhatsApp WID
 func PhoneToWid(source string) (destination string) {
 
 	// removing starting + from E164 phones
 	destination = strings.TrimLeft(source, "+")
 
 	if !strings.ContainsAny(destination, "@") {
-		return destination + "@s.whatsapp.net"
+		return destination + WHATSAPP_SERVERDOMAIN_USER_SUFFIX
 	}
 	return
 }
@@ -61,12 +68,12 @@ func FormatEndpoint(source string) (destination string, err error) {
 				return
 			}
 
-			destination = destination + "@g.us"
+			destination = destination + WHATSAPP_SERVERDOMAIN_GROUP_SUFFIX
 		} else {
 			if IsValidE164(destination) {
 				destination = PhoneToWid(destination)
 			} else {
-				destination = destination + "@g.us"
+				destination = destination + WHATSAPP_SERVERDOMAIN_GROUP_SUFFIX
 			}
 		}
 	}
@@ -88,6 +95,28 @@ func IsValidE164(phone string) bool {
 	return false
 }
 
+func GetPhoneIfValid(source string) (phone string, err error) {
+
+	// Removing whitespace
+	response := strings.TrimSpace(source)
+
+	// Validating minimum length for a phone number
+	response = strings.TrimLeft(response, "+")
+
+	// If it has @s.whatsapp.net, remove it
+	if strings.HasSuffix(response, WHATSAPP_SERVERDOMAIN_USER_SUFFIX) {
+		response = strings.Split(response, "@")[0]
+
+		if strings.Contains(response, ":") {
+			// removing session id
+			response = strings.Split(response, ":")[0]
+		}
+	}
+
+	// Regex to match E164 format
+	return library.GetPhoneIfValid(response)
+}
+
 /*
 <summary>
 
@@ -103,7 +132,7 @@ func IsValidE164(phone string) bool {
 <remarks>
 */
 func IsValidGroupId(id string) bool {
-	return strings.HasSuffix(id, "@g.us") && len(id) <= 25
+	return strings.HasSuffix(id, WHATSAPP_SERVERDOMAIN_GROUP_SUFFIX) && len(id) <= 25
 	/*
 		regex, _ := regexp.Compile(`^[0-9]{1,20}\@g\.us$`)
 		return regex.MatchString(id)

@@ -1,12 +1,11 @@
 package whatsmeow
 
 import (
-	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 
 	slug "github.com/gosimple/slug"
+	"github.com/nocodeleaks/quepasa/library"
 	whatsapp "github.com/nocodeleaks/quepasa/whatsapp"
 	log "github.com/sirupsen/logrus"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -54,6 +53,10 @@ func HandleKnowingMessages(handler *WhatsmeowHandlers, out *whatsapp.WhatsappMes
 	case in.ListMessage != nil:
 		HandleListMessage(logentry, out, in.ListMessage)
 	case in.SenderKeyDistributionMessage != nil:
+
+		json := library.ToJson(in.SenderKeyDistributionMessage)
+		logentry.Infof("unhandled SenderKeyDistributionMessage: %s", json)
+
 		out.Type = whatsapp.UnhandledMessageType
 		out.Debug = &whatsapp.WhatsappMessageDebug{
 			Event:  "SenderKeyDistributionMessage",
@@ -61,6 +64,10 @@ func HandleKnowingMessages(handler *WhatsmeowHandlers, out *whatsapp.WhatsappMes
 			Reason: "discard",
 		}
 	case in.StickerSyncRmrMessage != nil:
+
+		json := library.ToJson(in.StickerSyncRmrMessage)
+		logentry.Infof("unhandled StickerSyncRmrMessage: %s", json)
+
 		out.Type = whatsapp.UnhandledMessageType
 		out.Debug = &whatsapp.WhatsappMessageDebug{
 			Event:  "StickerSyncRmrMessage",
@@ -70,13 +77,17 @@ func HandleKnowingMessages(handler *WhatsmeowHandlers, out *whatsapp.WhatsappMes
 	case len(in.GetConversation()) > 0:
 		HandleTextMessage(logentry, out, in)
 	default:
+
+		json := library.ToJson(in)
+		logentry.Infof("unhandled message: %s", json)
+
 		// If no specific handler is found, mark the message as unhandled
 		out.Type = whatsapp.UnhandledMessageType
 
 		// Create debug information with the raw message
 		out.Debug = &whatsapp.WhatsappMessageDebug{
-			Event:  getMessageEventType(in),
-			Info:   in,
+			Event:  GetMessageEventType(in),
+			Info:   RemoveMessageContextInfo(in),
 			Reason: "unknown",
 		}
 	}
@@ -105,8 +116,32 @@ func HandleProtocolMessage(logentry *log.Entry, out *whatsapp.WhatsappMessage, i
 	case v == waE2E.ProtocolMessage_MESSAGE_EDIT:
 		out.Type = whatsapp.TextMessageType
 		out.Id = in.Key.GetID()
-		out.Text = in.EditedMessage.GetConversation()
 		out.Edited = true
+
+		// Extract text from different message types
+		editedMsg := in.EditedMessage
+		if editedMsg != nil {
+			switch {
+			case editedMsg.Conversation != nil:
+				// Plain text message
+				out.Text = editedMsg.GetConversation()
+			case editedMsg.ImageMessage != nil:
+				// Image message with caption
+				out.Text = editedMsg.ImageMessage.GetCaption()
+			case editedMsg.VideoMessage != nil:
+				// Video message with caption
+				out.Text = editedMsg.VideoMessage.GetCaption()
+			case editedMsg.DocumentMessage != nil:
+				// Document message with caption
+				out.Text = editedMsg.DocumentMessage.GetCaption()
+			case editedMsg.ExtendedTextMessage != nil:
+				// Extended text message
+				out.Text = editedMsg.ExtendedTextMessage.GetText()
+			default:
+				// Fallback to conversation field
+				out.Text = editedMsg.GetConversation()
+			}
+		}
 		return
 
 	case v == waE2E.ProtocolMessage_REVOKE:
@@ -115,6 +150,10 @@ func HandleProtocolMessage(logentry *log.Entry, out *whatsapp.WhatsappMessage, i
 		return
 
 	case v == waE2E.ProtocolMessage_HISTORY_SYNC_NOTIFICATION:
+
+		json := library.ToJson(in)
+		logentry.Infof("unhandled: %s", json)
+
 		var logtext string
 		out.Type = whatsapp.UnhandledMessageType
 		out.Debug = &whatsapp.WhatsappMessageDebug{
@@ -123,28 +162,22 @@ func HandleProtocolMessage(logentry *log.Entry, out *whatsapp.WhatsappMessage, i
 			Reason: "history sync notification",
 		}
 
-		b, err := json.Marshal(in)
-		if err != nil {
-			logentry.Error(err)
-			return
-		}
-
-		logtext = "ProtocolMessage :: " + string(b)
+		logtext = "ProtocolMessage :: " + json
 
 		notif := in.GetHistorySyncNotification()
 		if notif != nil {
-			b, err = json.Marshal(notif)
-			if err != nil {
-				logentry.Error(err)
-				return
-			}
-			logtext = logtext + "History Sync Notification :: " + string(b)
+			json := library.ToJson(notif)
+			logtext = logtext + "History Sync Notification :: " + json
 		}
 
 		out.Text = logtext
 		return
 
 	default:
+
+		json := library.ToJson(in)
+		logentry.Infof("unhandled event: %s", json)
+
 		out.Type = whatsapp.UnhandledMessageType
 		out.Debug = &whatsapp.WhatsappMessageDebug{
 			Event:  "ProtocolMessage",
@@ -245,9 +278,8 @@ func HandleImageMessage(logentry *log.Entry, out *whatsapp.WhatsappMessage, in *
 	out.Text = in.GetCaption()
 
 	out.Attachment = &whatsapp.WhatsappAttachment{
-		CanDownload: true,
-		Mimetype:    in.GetMimetype(),
-		FileLength:  in.GetFileLength(),
+		Mimetype:   in.GetMimetype(),
+		FileLength: in.GetFileLength(),
 	}
 
 	// handling thumbnail
@@ -270,9 +302,8 @@ func HandleStickerMessage(log *log.Entry, out *whatsapp.WhatsappMessage, in *waE
 	}
 
 	out.Attachment = &whatsapp.WhatsappAttachment{
-		CanDownload: true,
-		Mimetype:    in.GetMimetype(),
-		FileLength:  in.GetFileLength(),
+		Mimetype:   in.GetMimetype(),
+		FileLength: in.GetFileLength(),
 	}
 
 	// handling thumbnail
@@ -287,9 +318,8 @@ func HandleVideoMessage(log *log.Entry, out *whatsapp.WhatsappMessage, in *waE2E
 	out.Text = in.GetCaption()
 
 	out.Attachment = &whatsapp.WhatsappAttachment{
-		CanDownload: true,
-		Mimetype:    in.GetMimetype(),
-		FileLength:  in.GetFileLength(),
+		Mimetype:   in.GetMimetype(),
+		FileLength: in.GetFileLength(),
 	}
 
 	// handling thumbnail
@@ -302,18 +332,17 @@ func HandleVideoMessage(log *log.Entry, out *whatsapp.WhatsappMessage, in *waE2E
 	}
 }
 
-func HandleDocumentMessage(log *log.Entry, out *whatsapp.WhatsappMessage, in *waE2E.DocumentMessage) {
-	log.Debug("received a document message !")
+func HandleDocumentMessage(logentry *log.Entry, out *whatsapp.WhatsappMessage, in *waE2E.DocumentMessage) {
+	logentry.Debug("received a document message !")
 	out.Type = whatsapp.DocumentMessageType
 
 	// in case of caption passed
 	out.Text = in.GetCaption()
 
 	out.Attachment = &whatsapp.WhatsappAttachment{
-		CanDownload: true,
-		Mimetype:    in.GetMimetype(),
-		FileLength:  in.GetFileLength(),
-		FileName:    in.GetFileName(),
+		Mimetype:   in.GetMimetype(),
+		FileLength: in.GetFileLength(),
+		FileName:   in.GetFileName(),
 	}
 
 	// handling thumnail
@@ -331,10 +360,9 @@ func HandleAudioMessage(log *log.Entry, out *whatsapp.WhatsappMessage, in *waE2E
 	out.Type = whatsapp.AudioMessageType
 
 	out.Attachment = &whatsapp.WhatsappAttachment{
-		CanDownload: true,
-		Mimetype:    in.GetMimetype(),
-		FileLength:  in.GetFileLength(),
-		Seconds:     in.GetSeconds(),
+		Mimetype:   in.GetMimetype(),
+		FileLength: in.GetFileLength(),
+		Seconds:    in.GetSeconds(),
 	}
 
 	info := in.ContextInfo
@@ -361,13 +389,12 @@ func HandleLocationMessage(logentry *log.Entry, out *whatsapp.WhatsappMessage, i
 	length := uint64(len(content))
 
 	out.Attachment = &whatsapp.WhatsappAttachment{
-		CanDownload: false,
-		Mimetype:    "text/x-uri; location",
-		Latitude:    in.GetDegreesLatitude(),
-		Longitude:   in.GetDegreesLongitude(),
-		Url:         defaultUrl,
-		FileName:    filename,
-		FileLength:  length,
+		Mimetype:   "text/x-uri; location",
+		Latitude:   in.GetDegreesLatitude(),
+		Longitude:  in.GetDegreesLongitude(),
+		Url:        defaultUrl,
+		FileName:   filename,
+		FileLength: length,
 	}
 
 	// handling thumbnail
@@ -398,14 +425,13 @@ func HandleLiveLocationMessage(logentry *log.Entry, out *whatsapp.WhatsappMessag
 	length := uint64(len(content))
 
 	out.Attachment = &whatsapp.WhatsappAttachment{
-		CanDownload: false,
-		Mimetype:    "text/x-uri; live location",
-		Latitude:    in.GetDegreesLatitude(),
-		Longitude:   in.GetDegreesLongitude(),
-		Sequence:    in.GetSequenceNumber(),
-		Url:         defaultUrl,
-		FileName:    filename,
-		FileLength:  length,
+		Mimetype:   "text/x-uri; live location",
+		Latitude:   in.GetDegreesLatitude(),
+		Longitude:  in.GetDegreesLongitude(),
+		Sequence:   in.GetSequenceNumber(),
+		Url:        defaultUrl,
+		FileName:   filename,
+		FileLength: length,
 	}
 
 	// handling thumbnail
@@ -426,33 +452,4 @@ func HandleContactMessage(log *log.Entry, out *whatsapp.WhatsappMessage, in *waE
 
 	content := []byte(in.GetVcard())
 	out.Attachment = whatsapp.GenerateVCardAttachment(content, filename)
-}
-
-// getMessageEventType extracts the actual message type from the protobuf message
-func getMessageEventType(in *waE2E.Message) string {
-	v := reflect.ValueOf(in).Elem()
-	t := v.Type()
-
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
-		if field.Kind() == reflect.Ptr && !field.IsNil() {
-			fieldName := t.Field(i).Name
-			// Convert from Go field name to protobuf field name format
-			return toSnakeCase(fieldName)
-		}
-	}
-
-	return "unknown"
-}
-
-// toSnakeCase converts Go field names to protobuf field naming convention
-func toSnakeCase(s string) string {
-	var result strings.Builder
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			result.WriteRune('_')
-		}
-		result.WriteRune(r)
-	}
-	return strings.ToLower(result.String())
 }

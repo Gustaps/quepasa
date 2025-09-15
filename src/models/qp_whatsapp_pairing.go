@@ -47,10 +47,6 @@ func (source *QpWhatsappPairing) OnPaired(wid string) {
 		}
 	}
 
-	if source.conn != nil {
-		source.conn.SetReconnect(true)
-	}
-
 	logentry := source.GetLogger()
 	loglevel := logentry.Level
 	logentry = logentry.WithField(LogFields.Token, source.Token)

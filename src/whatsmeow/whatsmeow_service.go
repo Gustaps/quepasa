@@ -154,28 +154,24 @@ func (source *WhatsmeowServiceModel) CreateConnection(options *whatsapp.Whatsapp
 	}
 
 	logentry.Infof("creating whatsmeow connection with log level: %s", logentry.Level)
-	handlers := &WhatsmeowHandlers{
-		WhatsappOptions:  options.WhatsappOptions,
-		WhatsmeowOptions: source.Options,
-		Client:           client,
-		service:          source,
 
+	// Create connection first (will create handlers internally)
+	conn = &WhatsmeowConnection{
+		Client:    client,
 		LogStruct: library.LogStruct{LogEntry: logentry},
 	}
 
-	err = handlers.Register()
+	// Initialize handlers with proper options after connection is created
+	err = conn.initializeHandlers(options.WhatsappOptions, source.Options)
 	if err != nil {
 		return
 	}
 
-	conn = &WhatsmeowConnection{
-		Client:   client,
-		Handlers: handlers,
-
-		LogStruct: library.LogStruct{LogEntry: logentry},
-	}
-
 	client.PrePairCallback = conn.PairedCallBack
+
+	// Configure AutoReconnectHook
+	client.AutoReconnectHook = conn.AutoReconnectHook
+
 	return
 }
 
@@ -230,7 +226,7 @@ func (service *WhatsmeowServiceModel) GetStoreForMigrated(phone string) (str *st
 	return
 }
 
-func (source *WhatsmeowServiceModel) GetWhatsAppClient(options whatsapp.IWhatsappConnectionOptions) (client *whatsmeow.Client, err error) {
+func (source *WhatsmeowServiceModel) GetWhatsAppClient(options *whatsapp.WhatsappConnectionOptions) (client *whatsmeow.Client, err error) {
 	loglevel := WhatsmeowClientLogLevel
 	_, logerr := log.ParseLevel(source.Options.WMLogLevel)
 	if logerr == nil {

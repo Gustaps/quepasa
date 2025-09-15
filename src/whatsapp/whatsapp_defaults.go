@@ -26,11 +26,11 @@ var WhatsappMIMEAudio = [...]string{"audio/oga", "audio/ogx", "audio/x-mpeg-3", 
 var WhatsappMIMEVideo = [...]string{"video/mp4"}
 
 // Mime types for image messages, tested 3º
-var WhatsappMIMEImage = [...]string{"image/png", "image/jpeg", "image/jpg", "image/webp"}
+var WhatsappMIMEImage = [...]string{"image/jpeg", "image/jpg", "image/webp"}
 
 // Mime types for document messages, tested 4º
 var WhatsappMIMEDocument = [...]string{
-	"text/xml", "application/pdf",
+	"text/xml", "application/pdf", "image/png",
 	"application/ogg", "audio/ogg", "audio/wav", "audio/wave", "audio/x-wav", // not accepted anymore as audio msgs, but still compatible for convert to ptt
 }
 
@@ -39,3 +39,19 @@ const InvalidFilePrefix = "invalid-"
 
 // copying log fields names
 var LogFields = library.LogFields
+
+const (
+	WHATSAPP_SERVERDOMAIN_USER  = "s.whatsapp.net"
+	WHATSAPP_SERVERDOMAIN_GROUP = "g.us"
+	WHATSAPP_SERVERDOMAIN_LID   = "lid" // WhatsApp Business API
+
+	WHATSAPP_SERVERDOMAIN_USER_SUFFIX  = "@" + WHATSAPP_SERVERDOMAIN_USER
+	WHATSAPP_SERVERDOMAIN_GROUP_SUFFIX = "@" + WHATSAPP_SERVERDOMAIN_GROUP
+	WHATSAPP_SERVERDOMAIN_LID_SUFFIX   = "@" + WHATSAPP_SERVERDOMAIN_LID
+)
+
+var AllowedSuffix = map[string]bool{
+	WHATSAPP_SERVERDOMAIN_GROUP: true, // Group message
+	WHATSAPP_SERVERDOMAIN_USER:  true, // Direct message
+	WHATSAPP_SERVERDOMAIN_LID:   true, // New default suffix for WhatsApp Business API
+}

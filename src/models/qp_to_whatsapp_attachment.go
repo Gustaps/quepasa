@@ -5,8 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	audio "github.com/nocodeleaks/quepasa/audio"
+	environment "github.com/nocodeleaks/quepasa/environment"
 	library "github.com/nocodeleaks/quepasa/library"
+	media "github.com/nocodeleaks/quepasa/media"
 	whatsapp "github.com/nocodeleaks/quepasa/whatsapp"
 	log "github.com/sirupsen/logrus"
 )
@@ -102,9 +103,9 @@ func (source *QpToWhatsappAttachment) AttachSecureAndCustomize() {
 // Audio Formatting ...
 func (source *QpToWhatsappAttachment) AttachAudioTreatmentTesting() {
 
-	if audio.AreAudioToolsAvailable() {
+	if media.AreAudioToolsAvailable() {
 
-		audioInfo, err := audio.GetAudioInfoFromBytes(*source.Attach.GetContent())
+		audioInfo, err := media.GetAudioInfoFromBytes(*source.Attach.GetContent())
 		if err != nil {
 			log.Errorf("Erro ao obter as informações de áudio a partir dos bytes: %v", err)
 			return
@@ -117,7 +118,7 @@ func (source *QpToWhatsappAttachment) AttachAudioTreatmentTesting() {
 			}
 		}
 
-		source.Attach.WaveForm, err = audio.GenerateWaveform(*source.Attach.GetContent())
+		source.Attach.WaveForm, err = media.GenerateWaveform(*source.Attach.GetContent())
 		if err != nil {
 			log.Errorf("error generating waveform from bytes: %v", err)
 			return
@@ -138,7 +139,7 @@ func (source *QpToWhatsappAttachment) AttachAudioTreatment() {
 		return
 	}
 
-	if audio.IsAudioMIMEType(source.Attach.Mimetype) {
+	if media.IsAudioMIMEType(source.Attach.Mimetype) {
 		source.AttachAudioTreatmentTesting()
 	}
 
@@ -161,6 +162,64 @@ func (source *QpToWhatsappAttachment) AttachAudioTreatment() {
 }
 
 func (source *QpToWhatsappAttachment) AudioDetails() {
-	debug := audio.GetAudioDetails(source.Attach)
+	debug := media.GetAudioDetails(source.Attach)
 	source.Debug = append(source.Debug, debug...)
+}
+
+// AttachImageTreatment handles image conversion, specifically PNG to JPG conversion
+func (source *QpToWhatsappAttachment) AttachImageTreatment() {
+	attach := source.Attach
+	if attach == nil {
+		source.Debug = append(source.Debug, "[warn][AttachImageTreatment] nil attach")
+		return
+	}
+
+	// Check if PNG to JPG conversion is enabled
+	if !environment.Settings.General.ConvertPNGToJPG {
+		source.Debug = append(source.Debug, "[trace][AttachImageTreatment] PNG to JPG conversion is disabled in settings")
+		return
+	}
+
+	// Check if this is a PNG image that should be converted
+	if !media.ShouldConvertImage(attach.Mimetype, attach.FileName) {
+		source.Debug = append(source.Debug, fmt.Sprintf("[trace][AttachImageTreatment] PNG image conversion not required, current mime: %s, filename: %s", attach.Mimetype, attach.FileName))
+		return
+	}
+
+	source.Debug = append(source.Debug, fmt.Sprintf("[info][AttachImageTreatment] PNG image detected, attempting conversion to JPG. Current mime: %s, filename: %s", attach.Mimetype, attach.FileName))
+
+	// Get the current content
+	content := attach.GetContent()
+	if content == nil || len(*content) == 0 {
+		source.Debug = append(source.Debug, "[warn][AttachImageTreatment] no content available for PNG conversion")
+		return
+	}
+
+	// Convert PNG to JPG
+	jpgData, newMime, err := media.ConvertPngToJpg(*content)
+	if err != nil {
+		source.Debug = append(source.Debug, fmt.Sprintf("[error][AttachImageTreatment] failed to convert PNG to JPG: %v", err))
+		log.Errorf("Failed to convert PNG to JPG: %v", err)
+		return
+	}
+
+	// Update attachment with converted data
+	originalSize := len(*content)
+	newSize := len(jpgData)
+
+	attach.SetContent(&jpgData)
+	attach.Mimetype = newMime
+	attach.FileLength = uint64(newSize)
+
+	// Update filename extension if needed
+	if len(attach.FileName) > 0 {
+		lowerFileName := strings.ToLower(attach.FileName)
+		if strings.HasSuffix(lowerFileName, ".png") {
+			// Remove .png extension (case-insensitive) and add .jpg
+			baseFileName := attach.FileName[:len(attach.FileName)-4] // Remove last 4 characters (.png or .PNG)
+			attach.FileName = baseFileName + ".jpg"
+		}
+	}
+
+	source.Debug = append(source.Debug, fmt.Sprintf("[success][AttachImageTreatment] PNG successfully converted to JPG. Original size: %d bytes, new size: %d bytes, new mime: %s, new filename: %s", originalSize, newSize, newMime, attach.FileName))
 }
