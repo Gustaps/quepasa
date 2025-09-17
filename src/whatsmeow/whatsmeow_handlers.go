@@ -11,9 +11,11 @@ import (
 	"time"
 
 	library "github.com/nocodeleaks/quepasa/library"
+	metrics "github.com/nocodeleaks/quepasa/metrics"
 	whatsapp "github.com/nocodeleaks/quepasa/whatsapp"
 	log "github.com/sirupsen/logrus"
 	"go.mau.fi/whatsmeow/appstate"
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	types "go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
@@ -222,6 +224,10 @@ func (source *WhatsmeowHandlers) EventsHandler(rawEvt interface{}) {
 
 	case *events.Message:
 		go source.Message(*evt, "live")
+		return
+
+	case *events.UndecryptableMessage:
+		go source.UndecryptableMessage(*evt)
 		return
 
 		//# region CALLS
@@ -498,11 +504,14 @@ func (handler *WhatsmeowHandlers) Message(evt events.Message, from string) {
 
 		jsonstring, _ := json.Marshal(evt)
 		logentry.Errorf("nil message on receiving whatsmeow events | try use rawMessage ! json: %s", string(jsonstring))
+
+		// Count message receive error
+		metrics.MessageReceiveErrors.Inc()
 		return
 	}
 
 	// Determine if message is from history based on multiple criteria
-	isFromHistory := handler.isHistoryMessage(evt, from)
+	isFromHistory := handler.isHistoryMessage(from)
 
 	message := &whatsapp.WhatsappMessage{
 		Content:        evt.Message,
@@ -543,6 +552,8 @@ func (handler *WhatsmeowHandlers) Message(evt events.Message, from string) {
 		if message.Debug == nil {
 			logentry.Warnf("unhandled message type, no debug information: %s", message.Type)
 		}
+		// Count unhandled message as error
+		metrics.MessageReceiveUnhandled.Inc()
 	}
 
 	handler.Follow(message, from)
@@ -560,6 +571,16 @@ func (handler *WhatsmeowHandlers) Message(evt events.Message, from string) {
 
 // Append to cache handlers if exists, and then webhook
 func (handler *WhatsmeowHandlers) Follow(message *whatsapp.WhatsappMessage, from string) {
+	// Increment received messages counter for all incoming messages
+	// Only count messages that are not from us (FromMe = false)
+	if !message.FromMe {
+		metrics.MessagesReceived.Inc()
+
+		logentry := handler.GetLogger()
+		logentry.Debugf("received message counted: type=%s, from=%s, chat=%s",
+			message.Type, from, message.Chat.Id)
+	}
+
 	if handler.WAHandlers != nil {
 
 		// following to internal handlers
@@ -607,11 +628,187 @@ func (handler *WhatsmeowHandlers) MarkRead(message *whatsapp.WhatsappMessage, re
 	return
 }
 
+//#region EVENT UNDECRYPTABLE MESSAGE
+
+// attemptDecryption tries to decrypt a message using available decryption methods
+// Uses the DecryptSecretEncryptedMessage method from whatsmeow
+func (handler *WhatsmeowHandlers) attemptDecryption(ctx context.Context, evt *events.Message) (*waE2E.Message, error) {
+	if handler.Client == nil {
+		return nil, fmt.Errorf("client is nil")
+	}
+
+	logentry := handler.GetLogger()
+	logentry.Debug("attempting decryption using DecryptSecretEncryptedMessage")
+
+	// Use the DecryptSecretEncryptedMessage method directly
+	// Reference: https://github.com/tulir/whatsmeow/commit/03f180026b8fe1628b345657dd40af9b98f31fad
+	return handler.Client.DecryptSecretEncryptedMessage(ctx, evt)
+}
+
+// UndecryptableMessage handles messages that failed to decrypt
+// Based on whatsmeow commit: https://github.com/tulir/whatsmeow/commit/03f180026b8fe1628b345657dd40af9b98f31fad
+func (handler *WhatsmeowHandlers) UndecryptableMessage(evt events.UndecryptableMessage) {
+	eventid := atomic.AddUint64(&handler.Counter, 1)
+	logentry := handler.GetLogger()
+	logentry = logentry.WithField(LogFields.EventId, eventid)
+	logentry = logentry.WithField(LogFields.MessageId, evt.Info.ID)
+
+	logentry.Warn("received undecryptable message - attempting to process and retry decryption")
+
+	// Count undecryptable message as received but problematic
+	metrics.MessagesReceived.Inc()
+	metrics.MessageReceiveErrors.Inc()
+
+	// Log detailed information about the undecryptable message
+	logentry.WithFields(log.Fields{
+		"message_id":        evt.Info.ID,
+		"timestamp":         evt.Info.Timestamp,
+		"from":              evt.Info.Chat.String(),
+		"sender":            evt.Info.Sender.String(),
+		"is_from_me":        evt.Info.IsFromMe,
+		"is_unavailable":    evt.IsUnavailable,
+		"unavailable_type":  fmt.Sprintf("%v", evt.UnavailableType),
+		"decrypt_fail_mode": fmt.Sprintf("%v", evt.DecryptFailMode),
+		"chat_server":       evt.Info.Chat.Server,
+		"chat_user":         evt.Info.Chat.User,
+		"sender_server":     evt.Info.Sender.Server,
+		"sender_user":       evt.Info.Sender.User,
+		"device_id":         fmt.Sprintf("%v", evt.Info.DeviceSentMeta),
+		"message_type":      evt.Info.Type,
+		"push_name":         evt.Info.PushName,
+		"multicast":         evt.Info.Multicast,
+	}).Error("undecryptable message comprehensive details")
+
+	// Additional logging for unavailable messages
+	if evt.IsUnavailable {
+		logentry.WithFields(log.Fields{
+			"unavailable_type": fmt.Sprintf("%v", evt.UnavailableType),
+			"message_id":       evt.Info.ID,
+		}).Warn("message marked as unavailable - not sent to this device")
+	}
+
+	// Additional logging for different decrypt fail modes
+	logentry.Warnf("decrypt fail mode: %v", evt.DecryptFailMode)
+
+	// Create a WhatsappMessage structure for this undecryptable message
+	message := &whatsapp.WhatsappMessage{
+		Content:   evt,
+		Id:        evt.Info.ID,
+		Timestamp: ImproveTimestamp(evt.Info.Timestamp),
+		FromMe:    evt.Info.IsFromMe,
+		Type:      whatsapp.UnhandledMessageType,
+	}
+
+	// Populate chat and participant information
+	handler.PopulateChatAndParticipant(message, evt.Info)
+
+	// Create debug information with comprehensive undecryptable details
+	message.Debug = &whatsapp.WhatsappMessageDebug{
+		Event: "UndecryptableMessage",
+		Info: map[string]interface{}{
+			"is_unavailable":    evt.IsUnavailable,
+			"unavailable_type":  fmt.Sprintf("%v", evt.UnavailableType),
+			"decrypt_fail_mode": fmt.Sprintf("%v", evt.DecryptFailMode),
+			"message_info": map[string]interface{}{
+				"id":            evt.Info.ID,
+				"timestamp":     evt.Info.Timestamp,
+				"chat":          evt.Info.Chat.String(),
+				"sender":        evt.Info.Sender.String(),
+				"is_from_me":    evt.Info.IsFromMe,
+				"chat_server":   evt.Info.Chat.Server,
+				"chat_user":     evt.Info.Chat.User,
+				"sender_server": evt.Info.Sender.Server,
+				"sender_user":   evt.Info.Sender.User,
+				"device_id":     fmt.Sprintf("%v", evt.Info.DeviceSentMeta),
+				"message_type":  evt.Info.Type,
+				"push_name":     evt.Info.PushName,
+				"multicast":     evt.Info.Multicast,
+			},
+			"retry_attempts": 0, // Will be incremented if we implement retry logic
+			"first_seen":     time.Now().Unix(),
+		},
+		Reason: "undecryptable",
+	}
+
+	// Set text content with debug information
+	message.Text = fmt.Sprintf("Undecryptable message (ID: %s, IsUnavailable: %v, Type: %v, FailMode: %v)",
+		evt.Info.ID, evt.IsUnavailable, evt.UnavailableType, evt.DecryptFailMode)
+
+	// Determine if we should attempt decryption based on message type
+	// Only skip decryption for specific unavailable types like view_once
+	shouldAttemptDecryption := true
+
+	// Special handling for view_once messages - never attempt decryption
+	unavailableTypeStr := fmt.Sprintf("%v", evt.UnavailableType)
+	if unavailableTypeStr == "view_once" {
+		shouldAttemptDecryption = false
+		logentry.WithField("unavailable_type", unavailableTypeStr).Warn("view_once message detected - skipping decryption attempts")
+	} else {
+		// For all other cases (including IsUnavailable=true with empty type), attempt decryption
+		// These could be temporary delivery failures, network issues, or other recoverable problems
+		if evt.IsUnavailable && unavailableTypeStr == "" {
+			logentry.Warn("message marked unavailable but no specific type - attempting decryption retry")
+		}
+	}
+
+	// Attempt to use DecryptSecretEncryptedMessage method if appropriate conditions are met
+	if handler.Client != nil && shouldAttemptDecryption {
+		logentry.Info("attempting to decrypt using DecryptSecretEncryptedMessage method")
+
+		// Create a message event to try decryption
+		messageEvent := &events.Message{
+			Info:    evt.Info,
+			Message: nil, // This will be nil for undecryptable messages
+		}
+
+		// Try to decrypt using DecryptSecretEncryptedMessage
+		if decryptedMsg, err := handler.attemptDecryption(context.Background(), messageEvent); err == nil && decryptedMsg != nil {
+			logentry.Info("successfully decrypted previously undecryptable message")
+
+			// Create a new message event with the decrypted content
+			decryptedEvent := events.Message{
+				Info:    evt.Info,
+				Message: decryptedMsg,
+			}
+
+			// Process the now-decrypted message through normal pipeline
+			go handler.Message(decryptedEvent, "decrypted")
+			return
+		} else {
+			logentry.Warnf("failed to decrypt undecryptable message: %v", err)
+		}
+
+		// Log retry request for debugging purposes
+		logentry.Info("whatsmeow library should automatically request retry from sender")
+	} else if !shouldAttemptDecryption {
+		// Only log skipping for view_once messages specifically
+		if unavailableTypeStr == "view_once" {
+			logentry.Info("skipping decryption attempt - view_once messages are intentionally not delivered")
+		}
+	}
+
+	// If message is unavailable due to specific reasons, log accordingly
+	if evt.IsUnavailable {
+		logentry.WithField("unavailable_type", fmt.Sprintf("%v", evt.UnavailableType)).Warn("message marked as unavailable")
+	}
+
+	// Follow the standard message processing pipeline
+	// This will send the undecryptable message info to webhooks if configured
+	handler.Follow(message, "undecryptable")
+
+	logentry.Infof("processed undecryptable message - dispatched to handlers")
+}
+
+//#endregion
+
 //#region EVENT CALL
 
 func (source *WhatsmeowHandlers) CallMessage(evt types.BasicCallMeta) {
 	logentry := source.GetLogger()
 	logentry.Trace("event CallMessage !")
+
+	// Count incoming call as received message
+	metrics.MessagesReceived.Inc()
 
 	message := &whatsapp.WhatsappMessage{Content: evt}
 
@@ -795,7 +992,7 @@ func (handler *WhatsmeowHandlers) JoinedGroup(evt events.JoinedGroup) {
 //#region CONNECTION WEBHOOKS AND HISTORY CONTROL
 
 // isHistoryMessage determines if a message should be classified as history
-func (handler *WhatsmeowHandlers) isHistoryMessage(evt events.Message, from string) bool {
+func (handler *WhatsmeowHandlers) isHistoryMessage(from string) bool {
 	// If explicitly marked as history, return true
 	if from == "history" {
 		return true
@@ -882,6 +1079,7 @@ func (handler *WhatsmeowHandlers) OnOfflineSyncCompleted(evt events.OfflineSyncC
 	handler.sendSyncWebhook("sync_completed", map[string]interface{}{
 		"count": evt.Count,
 	})
+	metrics.MessageReceiveSyncEvents.Inc()
 
 	logentry.Info("history sync period ended based on OfflineSyncCompleted event")
 }
@@ -931,30 +1129,19 @@ func (handler *WhatsmeowHandlers) sendSyncWebhook(event string, data map[string]
 
 // enrichParticipantName enriches participant name for group messages using cached contact information
 func (handler *WhatsmeowHandlers) enrichParticipantName(participant *whatsapp.WhatsappChat, senderJID types.JID) {
-	if handler.Client == nil || handler.Client.Store == nil || handler.Client.Store.Contacts == nil {
-		return
-	}
+	// Use the centralized GetContactName function for consistency and null checks
+	name := GetContactName(handler.Client, senderJID)
 
-	// Buscar informações de contato em cache usando o JID do sender
-	contactInfo, err := handler.Client.Store.Contacts.GetContact(context.Background(), senderJID)
-	if err != nil || !contactInfo.Found {
-		return
-	}
+	logentry := handler.GetLogger()
 
-	// Aplicar mesma hierarquia do GetChatTitle: BusinessName > FullName > PushName > FirstName
-	if len(contactInfo.BusinessName) > 0 {
-		participant.Title = library.NormalizeForTitle(contactInfo.BusinessName)
-	} else if len(contactInfo.FullName) > 0 {
-		participant.Title = library.NormalizeForTitle(contactInfo.FullName)
-	} else if len(contactInfo.PushName) > 0 {
-		participant.Title = library.NormalizeForTitle(contactInfo.PushName)
-	} else if len(contactInfo.FirstName) > 0 {
-		participant.Title = library.NormalizeForTitle(contactInfo.FirstName)
-	}
+	// Log detailed debug information about the contact lookup process
+	cleanJID := CleanJID(senderJID)
+	logentry.Debugf("Enriching participant name - Original JID: %s, Clean JID: %s", senderJID.String(), cleanJID.String())
 
-	// Log quando o nome foi enriquecido via cache
-	if len(participant.Title) > 0 {
-		logentry := handler.GetLogger()
+	if len(name) > 0 {
+		participant.Title = library.NormalizeForTitle(name)
 		logentry.Debugf("Participant name enriched via cache for JID %s: %s", senderJID.String(), participant.Title)
+	} else {
+		logentry.Warnf("Could not find contact name for JID %s (clean: %s), title remains empty", senderJID.String(), cleanJID.String())
 	}
 }
