@@ -10,7 +10,8 @@ import (
 type WhatsappMessage struct {
 
 	// original message from source service
-	Content        any `json:"-"`
+	Content any `json:"-"`
+
 	InfoForHistory any `json:"-"`
 
 	Id      string `json:"id"`                // Upper text msg id
@@ -46,6 +47,9 @@ type WhatsappMessage struct {
 	// How many times this message was forwarded
 	ForwardingScore uint32 `json:"forwardingscore,omitempty"`
 
+	// Msg is reaction ? boolean
+	InReaction bool `json:"inreaction,omitempty"`
+
 	// Msg in reply of another ? Message ID
 	InReply string `json:"inreply,omitempty"`
 
@@ -79,7 +83,7 @@ type WhatsappOrderedMessages []WhatsappMessage
 
 func (m WhatsappOrderedMessages) Len() int { return len(m) }
 func (m WhatsappOrderedMessages) Less(i, j int) bool {
-	if m[i].Timestamp == m[j].Timestamp {
+	if m[i].Timestamp.Equal(m[j].Timestamp) {
 		return m[i].Id < m[j].Id
 	}
 	return m[i].Timestamp.Before(m[j].Timestamp)
@@ -138,7 +142,7 @@ func (source *WhatsappMessage) GetSource() any {
 }
 
 func (source *WhatsappMessage) FromGroup() bool {
-	return strings.HasSuffix(source.Chat.Id, "@g.us")
+	return strings.HasSuffix(source.Chat.Id, WHATSAPP_SERVERDOMAIN_GROUP_SUFFIX)
 }
 
 func (source *WhatsappMessage) FromAds() bool {

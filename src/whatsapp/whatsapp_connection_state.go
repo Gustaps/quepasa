@@ -8,7 +8,7 @@ const (
 	// Unknown, not treated state
 	Unknown WhatsappConnectionState = iota
 
-	// No connection attached
+	// No connection attached, possible failed on retry after connection lost
 	UnPrepared
 
 	// Not verified (not logged)
@@ -27,6 +27,9 @@ const (
 	Stopped
 
 	Restarting
+
+	// Attempting to reconnect after connection loss (auto-reconnect active)
+	Reconnecting
 
 	/*
 		<summary>
@@ -67,6 +70,7 @@ func (s WhatsappConnectionState) String() string {
 		"Stopping",
 		"Stopped",
 		"Restarting",
+		"Reconnecting",
 		"Connected",
 		"Fetching",
 		"Ready",

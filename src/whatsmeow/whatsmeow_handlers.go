@@ -1,7 +1,6 @@
 package whatsmeow
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,32 +10,38 @@ import (
 	"time"
 
 	library "github.com/nocodeleaks/quepasa/library"
+	metrics "github.com/nocodeleaks/quepasa/metrics"
 	whatsapp "github.com/nocodeleaks/quepasa/whatsapp"
 	log "github.com/sirupsen/logrus"
-	whatsmeow "go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	types "go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
 
 type WhatsmeowHandlers struct {
-	library.LogStruct // logging
+	WhatsmeowOptions          // default whatsmeow service global options
+	*WhatsmeowConnection      // Connection reference for accessing embedded managers
+	*whatsapp.WhatsappOptions // particular whatsapp options for this handler
 
-	// particular whatsapp options for this handler
-	*whatsapp.WhatsappOptions
-
-	// default whatsmeow service global options
-	WhatsmeowOptions
-
-	Client     *whatsmeow.Client
 	WAHandlers whatsapp.IWhatsappHandlers
 
 	eventHandlerID           uint32
 	unregisterRequestedToken bool
-	service                  *WhatsmeowServiceModel
 
 	// events counter
 	Counter uint64
+
+	// Connection control for history sync
+	offlineSyncStarted   bool
+	offlineSyncCompleted bool
+}
+
+func NewWhatsmeowHandlers(conn *WhatsmeowConnection, wmOptions WhatsmeowOptions, waOptions *whatsapp.WhatsappOptions) *WhatsmeowHandlers {
+	return &WhatsmeowHandlers{
+		WhatsmeowConnection: conn,
+		WhatsmeowOptions:    wmOptions,
+		WhatsappOptions:     waOptions,
+	}
 }
 
 func (source *WhatsmeowHandlers) GetServiceOptions() (options whatsapp.WhatsappOptionsExtended) {
@@ -133,13 +138,30 @@ func (source WhatsmeowHandlers) HandleHistorySync() bool {
 }
 
 // only affects whatsmeow
-func (handler *WhatsmeowHandlers) UnRegister() {
+func (handler *WhatsmeowHandlers) UnRegister(reason string) {
+	if handler == nil {
+		return
+	}
+
 	handler.unregisterRequestedToken = true
+
+	logentry := handler.GetLogger()
+	logentry.Tracef("unregistering handler, id: %v, reason: %s", handler.eventHandlerID, reason)
+
+	// if client is nil, we can't unregister
+	if handler.Client == nil {
+		if reason == "dispose" {
+			logentry.Tracef("unregister requested, but client is already nil, reason: %s", reason)
+		} else {
+			logentry.Warnf("unregister requested, but client is nil, reason: %s", reason)
+		}
+		return
+	}
 
 	// if is this session
 	found := handler.Client.RemoveEventHandler(handler.eventHandlerID)
 	if found {
-		handler.GetLogger().Infof("handler unregistered, id: %v", handler.eventHandlerID)
+		logentry.Infof("handler unregistered, id: %v, reason: %s", handler.eventHandlerID, reason)
 	}
 }
 
@@ -156,6 +178,14 @@ func (source *WhatsmeowHandlers) Register() (err error) {
 	logentry.Infof("handler registered, id: %v, loglevel: %s", source.eventHandlerID, logentry.Level)
 
 	return
+}
+
+// GetContactManager delegates contact manager retrieval to the underlying connection
+func (h *WhatsmeowHandlers) GetContactManager() whatsapp.WhatsappContactManagerInterface {
+	if h == nil || h.WhatsmeowConnection == nil {
+		return nil
+	}
+	return h.WhatsmeowConnection.GetContactManager()
 }
 
 func (source *WhatsmeowHandlers) SendPresence(presence types.Presence, from string) {
@@ -178,6 +208,12 @@ func (source *WhatsmeowHandlers) EventsHandler(rawEvt interface{}) {
 
 	if source.unregisterRequestedToken {
 		logentry.Info("unregister event handler requested")
+
+		if source.Client == nil {
+			logentry.Debugf("unregister requested, but client is already nil")
+			return
+		}
+
 		source.Client.RemoveEventHandler(source.eventHandlerID)
 		return
 	}
@@ -211,6 +247,12 @@ func (source *WhatsmeowHandlers) EventsHandler(rawEvt interface{}) {
 		return
 
 	case *events.Connected:
+		// Initialize offline sync flags - assume sync will happen after connection
+		source.offlineSyncStarted = true
+		source.offlineSyncCompleted = false
+
+		logentry.Info("connection established - assuming history sync period will start")
+
 		if source.Client != nil {
 			// zerando contador de tentativas de reconexão
 			// importante para zerar o tempo entre tentativas em caso de erro
@@ -219,6 +261,9 @@ func (source *WhatsmeowHandlers) EventsHandler(rawEvt interface{}) {
 			presence := source.GetPresence()
 			source.SendPresence(presence, "'connected' event")
 		}
+
+		// Send connection webhook event
+		go source.sendConnectionWebhook("connected")
 
 		if source.WAHandlers != nil && !source.WAHandlers.IsInterfaceNil() {
 			go source.WAHandlers.OnConnected()
@@ -275,6 +320,14 @@ func (source *WhatsmeowHandlers) EventsHandler(rawEvt interface{}) {
 			logentry.Errorf("pair error event: %s", jsonEvt)
 		}
 
+	case *events.OfflineSyncPreview:
+		go source.OnOfflineSyncPreview(*evt)
+		return
+
+	case *events.OfflineSyncCompleted:
+		go source.OnOfflineSyncCompleted(*evt)
+		return
+
 	case
 		*events.AppState,
 		*events.CallTerminate,
@@ -282,14 +335,15 @@ func (source *WhatsmeowHandlers) EventsHandler(rawEvt interface{}) {
 		*events.DeleteForMe,
 		*events.MarkChatAsRead,
 		*events.Mute,
-		*events.OfflineSyncCompleted,
-		*events.OfflineSyncPreview,
 		*events.PairSuccess,
 		*events.Pin,
 		*events.PushName,
 		*events.GroupInfo,
 		*events.QR:
-		logentry.Tracef("event ignored: %v", reflect.TypeOf(evt))
+		logentry.Tracef("event not implemented yet: %v", reflect.TypeOf(evt))
+		if source.ShouldDispatchUnhandled() {
+			go source.DispatchUnhandledEvent(evt, reflect.TypeOf(rawEvt).String())
+		}
 		return // ignoring not implemented yet
 
 	default:
@@ -312,9 +366,13 @@ func (source *WhatsmeowHandlers) DispatchUnhandledEvent(evt interface{}, eventTy
 	// Clean up the event type by removing the *events. prefix
 	cleanEventType := strings.TrimPrefix(eventType, "*events.")
 
+	// Generate unique event ID with prefix, original ID and random suffix to avoid cache conflicts
+	// Format: event_<8digits>_<originalID>
+	randomizer := fmt.Sprintf("%08d", time.Now().Nanosecond()%100000000)
+
 	message := &whatsapp.WhatsappMessage{
 		Content:   evt,
-		Id:        source.Client.GenerateMessageID(),
+		Id:        fmt.Sprintf("event_%s_%s", randomizer, source.Client.GenerateMessageID()),
 		Timestamp: time.Now().Truncate(time.Second),
 		Type:      whatsapp.UnhandledMessageType,
 		FromMe:    false,
@@ -330,62 +388,12 @@ func (source *WhatsmeowHandlers) DispatchUnhandledEvent(evt interface{}, eventTy
 	// Try to extract chat information from events that have Info field
 	if eventWithInfo, ok := evt.(interface{ GetInfo() types.MessageInfo }); ok {
 		info := eventWithInfo.GetInfo()
-
-		// basic information
-		message.Id = info.ID
+		message.Id = fmt.Sprintf("event_%s_%s", randomizer, info.ID)
 		message.Timestamp = ImproveTimestamp(info.Timestamp)
 		message.FromMe = info.IsFromMe
 
-		message.Chat = whatsapp.WhatsappChat{}
-		chatID := fmt.Sprint(info.Chat.User, "@", info.Chat.Server)
-		message.Chat.Id = chatID
-		message.Chat.Title = GetChatTitle(source.Client, info.Chat)
-
-		// Populate phone field
-		message.Chat.PopulatePhone(source)
-
-		// Get LID for the chat if available
-		if source.Client != nil && source.Client.Store != nil {
-			chatJID, err := types.ParseJID(chatID)
-			if err == nil {
-				lidJID, err := source.Client.Store.LIDs.GetLIDForPN(context.TODO(), chatJID)
-				if err == nil && !lidJID.IsEmpty() {
-					message.Chat.Lid = lidJID.String()
-				}
-			}
-		}
-
-		// Handle group participants
-		if info.IsGroup {
-			message.Participant = &whatsapp.WhatsappChat{}
-
-			participantID := fmt.Sprint(info.Sender.User, "@", info.Sender.Server)
-			message.Participant.Id = participantID
-			message.Participant.Title = GetChatTitle(source.Client, info.Sender)
-
-			// Populate phone field for participant
-			message.Participant.PopulatePhone(source)
-
-			// If title is empty, use PushName as fallback
-			if len(message.Participant.Title) == 0 {
-				message.Participant.Title = info.PushName
-			}
-
-			// Get LID for the participant if available
-			if source.Client != nil && source.Client.Store != nil {
-				participantJID, err := types.ParseJID(participantID)
-				if err == nil {
-					lidJID, err := source.Client.Store.LIDs.GetLIDForPN(context.TODO(), participantJID)
-					if err == nil && !lidJID.IsEmpty() {
-						message.Participant.Lid = lidJID.String()
-					}
-				}
-			}
-		} else {
-			if len(message.Chat.Title) == 0 && message.FromMe {
-				message.Chat.Title = library.GetPhoneByWId(message.Chat.Id)
-			}
-		}
+		// Populate chat and participant information
+		source.PopulateChatAndParticipant(message, info)
 
 		// Follow the same pattern as other messages
 		source.Follow(message, "debug")
@@ -457,6 +465,25 @@ func (source *WhatsmeowHandlers) OnHistorySyncEvent(evt events.HistorySync) {
 
 //#region EVENT MESSAGE
 
+func (handler *WhatsmeowHandlers) PopulateChatAndParticipant(message *whatsapp.WhatsappMessage, info types.MessageInfo) {
+	message.Chat = *NewWhatsappChat(handler, info.Chat)
+
+	if info.IsGroup {
+		message.Participant = NewWhatsappChat(handler, info.Sender)
+
+		// Enrich participant name if empty (only for group messages)
+		if message.Participant != nil && len(message.Participant.Title) == 0 {
+			handler.enrichParticipantName(message.Participant, info.Sender)
+		}
+	} /* else { // Obsolete
+		// If title is empty, use Phone as fallback
+		if len(message.Chat.Title) == 0 && message.FromMe {
+			message.Chat.Title = library.GetPhoneByWId(message.Chat.Id)
+		}
+	}
+	*/
+}
+
 // Aqui se processar um evento de recebimento de uma mensagem genérica
 func (handler *WhatsmeowHandlers) Message(evt events.Message, from string) {
 	logentry := handler.GetLogger()
@@ -471,16 +498,19 @@ func (handler *WhatsmeowHandlers) Message(evt events.Message, from string) {
 
 		jsonstring, _ := json.Marshal(evt)
 		logentry.Errorf("nil message on receiving whatsmeow events | try use rawMessage ! json: %s", string(jsonstring))
+
+		// Count message receive error
+		metrics.MessageReceiveErrors.Inc()
 		return
 	}
 
-	// Filter out messageContextInfo from the message content
-	filteredContent := FilterMessageContextInfo(evt.Message)
+	// Determine if message is from history based on multiple criteria
+	isFromHistory := handler.isHistoryMessage(from)
 
 	message := &whatsapp.WhatsappMessage{
-		Content:        filteredContent,
+		Content:        evt.Message,
 		InfoForHistory: evt.Info,
-		FromHistory:    from == "history",
+		FromHistory:    isFromHistory,
 	}
 	// basic information
 	message.Id = evt.Info.ID
@@ -489,55 +519,24 @@ func (handler *WhatsmeowHandlers) Message(evt events.Message, from string) {
 
 	message.FromMe = evt.Info.IsFromMe
 
-	message.Chat = whatsapp.WhatsappChat{}
-	chatID := fmt.Sprint(evt.Info.Chat.User, "@", evt.Info.Chat.Server)
-	message.Chat.Id = chatID
-	message.Chat.Title = GetChatTitle(handler.Client, evt.Info.Chat)
-
-	// Populate phone field
-	message.Chat.PopulatePhone(handler)
-
-	// Get LID for the chat if available
-	if handler.Client != nil && handler.Client.Store != nil {
-		chatJID, err := types.ParseJID(chatID)
-		if err == nil {
-			lidJID, err := handler.Client.Store.LIDs.GetLIDForPN(context.TODO(), chatJID)
-			if err == nil && !lidJID.IsEmpty() {
-				message.Chat.Lid = lidJID.String()
-			}
-		}
-	}
-
-	if evt.Info.IsGroup {
-		message.Participant = &whatsapp.WhatsappChat{}
-
-		participantID := fmt.Sprint(evt.Info.Sender.User, "@", evt.Info.Sender.Server)
-		message.Participant.Id = participantID
-		message.Participant.Title = GetChatTitle(handler.Client, evt.Info.Sender)
-
-		// Populate phone field for participant
-		message.Participant.PopulatePhone(handler)
-
-		// If title is empty, use PushName as fallback, sugested by hugo sampaio, removing message.FromMe
-		if len(message.Participant.Title) == 0 {
-			message.Participant.Title = evt.Info.PushName
+	// Log message classification for debugging
+	if isFromHistory {
+		reason := "unknown"
+		if from == "history" {
+			reason = "explicit history flag"
+		} else if handler.offlineSyncStarted && !handler.offlineSyncCompleted {
+			reason = "offline sync period (OfflineSyncPreview to OfflineSyncCompleted)"
 		}
 
-		// Get LID for the participant if available
-		if handler.Client != nil && handler.Client.Store != nil {
-			participantJID, err := types.ParseJID(participantID)
-			if err == nil {
-				lidJID, err := handler.Client.Store.LIDs.GetLIDForPN(context.TODO(), participantJID)
-				if err == nil && !lidJID.IsEmpty() {
-					message.Participant.Lid = lidJID.String()
-				}
-			}
-		}
+		logentry.Debugf("processing history message: %s, timestamp: %v, reason: %s, offline_sync_active: %v",
+			message.Id, message.Timestamp, reason, handler.offlineSyncStarted && !handler.offlineSyncCompleted)
 	} else {
-		if len(message.Chat.Title) == 0 && message.FromMe {
-			message.Chat.Title = library.GetPhoneByWId(message.Chat.Id)
-		}
+		logentry.Debugf("processing real-time message: %s, timestamp: %v, offline_sync_active: %v",
+			message.Id, message.Timestamp, handler.offlineSyncStarted && !handler.offlineSyncCompleted)
 	}
+
+	// Populate chat and participant information
+	handler.PopulateChatAndParticipant(message, evt.Info)
 
 	// Process diferent message types
 	HandleKnowingMessages(handler, message, evt.Message)
@@ -547,31 +546,11 @@ func (handler *WhatsmeowHandlers) Message(evt events.Message, from string) {
 		if message.Debug == nil {
 			logentry.Warnf("unhandled message type, no debug information: %s", message.Type)
 		}
+		// Count unhandled message as error
+		metrics.MessageReceiveUnhandled.Inc()
 	}
 
 	handler.Follow(message, from)
-}
-
-// FilterMessageContextInfo removes the messageContextInfo field from message content
-func FilterMessageContextInfo(content interface{}) interface{} {
-	if content == nil {
-		return content
-	}
-
-	// Use reflection to check if content has messageContextInfo field
-	if reflect.TypeOf(content).Kind() == reflect.Ptr {
-		elem := reflect.ValueOf(content).Elem()
-		if elem.IsValid() && elem.Kind() == reflect.Struct {
-			// Check if the struct has a messageContextInfo field
-			field := elem.FieldByName("MessageContextInfo")
-			if field.IsValid() && field.CanSet() {
-				// Set the field to nil/zero value
-				field.Set(reflect.Zero(field.Type()))
-			}
-		}
-	}
-
-	return content
 }
 
 //#endregion
@@ -586,6 +565,16 @@ func FilterMessageContextInfo(content interface{}) interface{} {
 
 // Append to cache handlers if exists, and then webhook
 func (handler *WhatsmeowHandlers) Follow(message *whatsapp.WhatsappMessage, from string) {
+	// Increment received messages counter for all incoming messages
+	// Only count messages that are not from us (FromMe = false)
+	if !message.FromMe {
+		metrics.MessagesReceived.Inc()
+
+		logentry := handler.GetLogger()
+		logentry.Debugf("received message counted: type=%s, from=%s, chat=%s",
+			message.Type, from, message.Chat.Id)
+	}
+
 	if handler.WAHandlers != nil {
 
 		// following to internal handlers
@@ -639,6 +628,9 @@ func (source *WhatsmeowHandlers) CallMessage(evt types.BasicCallMeta) {
 	logentry := source.GetLogger()
 	logentry.Trace("event CallMessage !")
 
+	// Count incoming call as received message
+	metrics.MessagesReceived.Inc()
+
 	message := &whatsapp.WhatsappMessage{Content: evt}
 
 	// basic information
@@ -646,10 +638,7 @@ func (source *WhatsmeowHandlers) CallMessage(evt types.BasicCallMeta) {
 	message.Timestamp = evt.Timestamp
 	message.FromMe = false
 
-	message.Chat = whatsapp.WhatsappChat{}
-	chatID := fmt.Sprint(evt.From.User, "@", evt.From.Server)
-	message.Chat.Id = chatID
-
+	message.Chat = *NewWhatsappChat(source, evt.From)
 	message.Type = whatsapp.CallMessageType
 
 	if source.WAHandlers != nil {
@@ -752,12 +741,8 @@ func (source *WhatsmeowHandlers) Receipt(evt events.Receipt) {
 		message.Timestamp = evt.Timestamp
 		message.FromMe = false
 
-		message.Chat = whatsapp.WhatsappChat{}
-		message.Chat.Id = chatID
-
-		message.Type = whatsapp.SystemMessageType
-
-		// message ids comma separated
+		message.Chat = *NewWhatsappChat(source, evt.Chat)
+		message.Type = whatsapp.SystemMessageType // message ids comma separated
 		message.Text = id
 
 		// following to internal handlers
@@ -771,7 +756,9 @@ func (source *WhatsmeowHandlers) Receipt(evt events.Receipt) {
 
 func (handler *WhatsmeowHandlers) OnLoggedOutEvent(evt events.LoggedOut) {
 	reason := evt.Reason.String()
-	handler.GetLogger().Tracef("logged out %s", reason)
+
+	logentry := handler.GetLogger()
+	logentry.Tracef("logged out %s", reason)
 
 	if handler.WAHandlers != nil {
 		handler.WAHandlers.LoggedOut(reason)
@@ -786,7 +773,7 @@ func (handler *WhatsmeowHandlers) OnLoggedOutEvent(evt events.LoggedOut) {
 	}
 
 	handler.Follow(message, "logout")
-	handler.UnRegister()
+	handler.UnRegister("logged out event")
 }
 
 //#endregion
@@ -821,11 +808,161 @@ func (handler *WhatsmeowHandlers) JoinedGroup(evt events.JoinedGroup) {
 	handler.Follow(message, "group")
 }
 
-func (handler *WhatsmeowHandlers) GetPhoneFromLID(lid string) (string, error) {
-	if handler.service == nil {
-		return "", fmt.Errorf("no service available")
+//#endregion
+
+//#region CONNECTION WEBHOOKS AND HISTORY CONTROL
+
+// isHistoryMessage determines if a message should be classified as history
+func (handler *WhatsmeowHandlers) isHistoryMessage(from string) bool {
+	// If explicitly marked as history, return true
+	if from == "history" {
+		return true
 	}
-	return handler.service.GetPhoneFromLID(lid)
+
+	// Main logic: If we're in offline sync period (between OfflineSyncPreview and OfflineSyncCompleted)
+	// all messages should be considered history
+	if handler.offlineSyncStarted && !handler.offlineSyncCompleted {
+		return true
+	}
+
+	// If not in sync period, it's real-time
+	return false
 }
 
-//#endregion
+// sendConnectionWebhook sends connection status events to configured webhooks
+func (handler *WhatsmeowHandlers) sendConnectionWebhook(event string) {
+	if handler.WAHandlers == nil {
+		return
+	}
+
+	logentry := handler.GetLogger()
+	logentry.Infof("sending connection webhook event: %s", event)
+
+	// Get phone number from connection
+	phone := ""
+	if handler.Client != nil && handler.Client.Store != nil {
+		jid := handler.Client.Store.ID
+		if jid != nil {
+			phone = jid.User
+		}
+	}
+
+	// Create connection event message
+	message := &whatsapp.WhatsappMessage{
+		Id:        handler.Client.GenerateMessageID(),
+		Timestamp: time.Now().Truncate(time.Second),
+		Type:      whatsapp.SystemMessageType,
+		FromMe:    false,
+		Chat:      whatsapp.WASYSTEMCHAT,
+		Text:      event,
+		Info: map[string]interface{}{
+			"event":     event,
+			"phone":     phone,
+			"timestamp": time.Now(),
+		},
+	}
+
+	// Send through internal handlers
+	go handler.WAHandlers.Message(message, "connection")
+}
+
+// OnOfflineSyncPreview handles the start of offline synchronization
+func (handler *WhatsmeowHandlers) OnOfflineSyncPreview(evt events.OfflineSyncPreview) {
+	logentry := handler.GetLogger()
+	logentry.Infof("offline sync preview started - Total: %d, Messages: %d, Notifications: %d, Receipts: %d",
+		evt.Total, evt.Messages, evt.Notifications, evt.Receipts)
+
+	// Mark the start of offline sync period (reset flags in case already set by connection)
+	handler.offlineSyncStarted = true
+	handler.offlineSyncCompleted = false
+
+	// Send sync preview webhook
+	handler.sendSyncWebhook("sync_preview", map[string]interface{}{
+		"total":         evt.Total,
+		"messages":      evt.Messages,
+		"notifications": evt.Notifications,
+		"receipts":      evt.Receipts,
+	})
+
+	logentry.Info("history sync period confirmed by OfflineSyncPreview event")
+}
+
+// OnOfflineSyncCompleted handles the completion of offline synchronization
+func (handler *WhatsmeowHandlers) OnOfflineSyncCompleted(evt events.OfflineSyncCompleted) {
+	logentry := handler.GetLogger()
+	logentry.Infof("offline sync completed - Count: %d", evt.Count)
+
+	// Mark the end of offline sync period
+	handler.offlineSyncCompleted = true
+	handler.offlineSyncStarted = false
+
+	// Send sync completed webhook
+	handler.sendSyncWebhook("sync_completed", map[string]interface{}{
+		"count": evt.Count,
+	})
+	metrics.MessageReceiveSyncEvents.Inc()
+
+	logentry.Info("history sync period ended based on OfflineSyncCompleted event")
+}
+
+// sendSyncWebhook sends synchronization events to configured webhooks
+func (handler *WhatsmeowHandlers) sendSyncWebhook(event string, data map[string]interface{}) {
+	if handler.WAHandlers == nil {
+		return
+	}
+
+	logentry := handler.GetLogger()
+	logentry.Infof("sending sync webhook event: %s", event)
+
+	// Get phone number from connection
+	phone := ""
+	if handler.Client != nil && handler.Client.Store != nil {
+		jid := handler.Client.Store.ID
+		if jid != nil {
+			phone = jid.User
+		}
+	}
+
+	// Merge data with common fields
+	info := map[string]interface{}{
+		"event":     event,
+		"phone":     phone,
+		"timestamp": time.Now(),
+	}
+	for k, v := range data {
+		info[k] = v
+	}
+
+	// Create sync event message
+	message := &whatsapp.WhatsappMessage{
+		Id:        handler.Client.GenerateMessageID(),
+		Timestamp: time.Now().Truncate(time.Second),
+		Type:      whatsapp.SystemMessageType,
+		FromMe:    false,
+		Chat:      whatsapp.WASYSTEMCHAT,
+		Text:      event,
+		Info:      info,
+	}
+
+	// Send through internal handlers
+	go handler.WAHandlers.Message(message, "sync")
+}
+
+// enrichParticipantName enriches participant name for group messages using cached contact information
+func (handler *WhatsmeowHandlers) enrichParticipantName(participant *whatsapp.WhatsappChat, senderJID types.JID) {
+	// Use the centralized GetContactName function for consistency and null checks
+	name := GetContactName(handler.Client, senderJID)
+
+	logentry := handler.GetLogger()
+
+	// Log detailed debug information about the contact lookup process
+	cleanJID := CleanJID(senderJID)
+	logentry.Debugf("Enriching participant name - Original JID: %s, Clean JID: %s", senderJID.String(), cleanJID.String())
+
+	if len(name) > 0 {
+		participant.Title = library.NormalizeForTitle(name)
+		logentry.Debugf("Participant name enriched via cache for JID %s: %s", senderJID.String(), participant.Title)
+	} else {
+		logentry.Warnf("Could not find contact name for JID %s (clean: %s), title remains empty", senderJID.String(), cleanJID.String())
+	}
+}
