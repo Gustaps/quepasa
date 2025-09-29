@@ -94,8 +94,8 @@ func (source *WhatsmeowConnection) Connect() (err error) {
 	return
 }
 
-// func (cli *Client) Download(msg DownloadableMessage) (data []byte, err error)
-func (source *WhatsmeowConnection) DownloadData(imsg whatsapp.IWhatsappMessage) (data []byte, err error) {
+// Download attachment
+func (source *WhatsmeowConnection) DownloadData(imsg whatsapp.IWhatsappMessage, url string) (data []byte, err error) {
 	msg := imsg.GetSource()
 	logentry := source.GetLogger().WithField(LogFields.MessageId, imsg.GetId())
 
@@ -108,34 +108,38 @@ func (source *WhatsmeowConnection) DownloadData(imsg whatsapp.IWhatsappMessage) 
 
 	waMsg, ok := msg.(*waE2E.Message)
 	if ok {
+        var urlPtr *string
+
+        switch {
+        case waMsg.ImageMessage != nil:
+            urlPtr = waMsg.ImageMessage.URL
+        case waMsg.VideoMessage != nil:
+            urlPtr = waMsg.VideoMessage.URL
+        case waMsg.AudioMessage != nil:
+            urlPtr = waMsg.AudioMessage.URL
+        case waMsg.DocumentMessage != nil:
+            urlPtr = waMsg.DocumentMessage.URL
+        case waMsg.StickerMessage != nil:
+            urlPtr = waMsg.StickerMessage.URL
+        }
+
+	    if url == "web" {
+        	if urlPtr != nil {
+        		replaced := strings.Replace(*urlPtr, "mmg", "web", 1)
+        		*urlPtr = replaced
+        	}
+        }
+
+        if urlPtr != nil {
+            logentry.Infof("downloading msg attachment url: %s", *urlPtr)
+        } else {
+            logentry.Infof("downloading msg attachment url: <nil>")
+        }
+
 		downloadable = GetDownloadableMessage(waMsg)
 		if downloadable != nil {
 			logentry.Trace("waMsg implements DownloadableMessage, using Client.Download()")
 			return source.Client.Download(context.Background(), downloadable)
-		} else {
-
-			switch {
-			case waMsg.ImageMessage != nil:
-				replaced := strings.Replace(*waMsg.ImageMessage.URL, "mmg", "web", 1)
-				waMsg.ImageMessage.URL = &replaced
-			case waMsg.VideoMessage != nil:
-				replaced := strings.Replace(*waMsg.VideoMessage.URL, "mmg", "web", 1)
-				waMsg.VideoMessage.URL = &replaced
-			case waMsg.AudioMessage != nil:
-				replaced := strings.Replace(*waMsg.AudioMessage.URL, "mmg", "web", 1)
-				waMsg.AudioMessage.URL = &replaced
-			case waMsg.DocumentMessage != nil:
-				replaced := strings.Replace(*waMsg.DocumentMessage.URL, "mmg", "web", 1)
-				waMsg.DocumentMessage.URL = &replaced
-			case waMsg.StickerMessage != nil:
-				replaced := strings.Replace(*waMsg.StickerMessage.URL, "mmg", "web", 1)
-				waMsg.StickerMessage.URL = &replaced
-			}
-			downloadable = GetDownloadableMessage(waMsg)
-			if downloadable != nil {
-				logentry.Trace("waMsg implements DownloadableMessage, using Client.Download()")
-				return source.Client.Download(context.Background(), downloadable)
-			}
 		}
 	}
 
@@ -152,9 +156,9 @@ func (source *WhatsmeowConnection) DownloadData(imsg whatsapp.IWhatsappMessage) 
 	return nil, fmt.Errorf("message (%s) is not downloadable", imsg.GetId())
 }
 
-func (conn *WhatsmeowConnection) Download(imsg whatsapp.IWhatsappMessage, cache bool) (att *whatsapp.WhatsappAttachment, err error) {
+func (conn *WhatsmeowConnection) Download(imsg whatsapp.IWhatsappMessage, cache bool, url string) (att *whatsapp.WhatsappAttachment, err error) {
 	logentry := conn.GetLogger().WithField(LogFields.MessageId, imsg.GetId())
-	logentry.Tracef("Download() method called, Cache: %v", cache)
+	logentry.Tracef("Download() method called, Cache: %v Url: %s", cache, url)
 
 	att = imsg.GetAttachment()
 	if att == nil {
@@ -166,7 +170,7 @@ func (conn *WhatsmeowConnection) Download(imsg whatsapp.IWhatsappMessage, cache 
 		return att, nil
 	}
 
-	data, err := conn.DownloadData(imsg)
+	data, err := conn.DownloadData(imsg, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download data for message (%s): %v", imsg.GetId(), err)
 	}
