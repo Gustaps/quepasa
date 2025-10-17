@@ -531,6 +531,7 @@ func (handler *WhatsmeowHandlers) Message(evt events.Message, from string) {
 
 		logentry.Debugf("processing history message: %s, timestamp: %v, reason: %s, offline_sync_active: %v",
 			message.Id, message.Timestamp, reason, handler.offlineSyncStarted && !handler.offlineSyncCompleted)
+		return // por hora vamos ignorar as mensagens de historico pois estao inundando os servicos e causando timeout
 	} else {
 		logentry.Debugf("processing real-time message: %s, timestamp: %v, offline_sync_active: %v",
 			message.Id, message.Timestamp, handler.offlineSyncStarted && !handler.offlineSyncCompleted)
