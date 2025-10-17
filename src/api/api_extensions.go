@@ -218,18 +218,6 @@ func GetCache(r *http.Request) bool {
 /*
 <summary>
 
-	Get a url to be used, From Http Request
-	Getting from PATH => QUERY => FROM => HEADER
-
-</summary>
-*/
-func GetUrl(r *http.Request) string {
-	return library.GetRequestParameter(r, "url")
-}
-
-/*
-<summary>
-
 	Get a boolean indicating that message id should be used as a prefix, defaults true
 	Getting from PATH => QUERY => FROM => HEADER
 

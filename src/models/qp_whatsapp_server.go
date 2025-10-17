@@ -138,7 +138,7 @@ func (server QpWhatsappServer) GetWId() string {
 	return server.QpServer.Wid
 }
 
-func (source *QpWhatsappServer) DownloadData(id string, url string) ([]byte, error) {
+func (source *QpWhatsappServer) DownloadData(id string) ([]byte, error) {
 	msg, err := source.Handler.GetById(id)
 	if err != nil {
 		return nil, err
@@ -148,7 +148,7 @@ func (source *QpWhatsappServer) DownloadData(id string, url string) ([]byte, err
 	logentry = logentry.WithField(LogFields.MessageId, id)
 	logentry.Info("downloading msg data")
 
-	return source.connection.DownloadData(msg, url)
+	return source.connection.DownloadData(msg)
 }
 
 /*
@@ -158,7 +158,7 @@ func (source *QpWhatsappServer) DownloadData(id string, url string) ([]byte, err
 
 </summary>
 */
-func (source *QpWhatsappServer) Download(id string, cache bool, url string) (att *whatsapp.WhatsappAttachment, err error) {
+func (source *QpWhatsappServer) Download(id string, cache bool) (att *whatsapp.WhatsappAttachment, err error) {
 	msg, err := source.Handler.GetById(id)
 	if err != nil {
 		return
@@ -166,9 +166,9 @@ func (source *QpWhatsappServer) Download(id string, cache bool, url string) (att
 
 	logentry := source.GetLogger()
 	logentry = logentry.WithField(LogFields.MessageId, id)
-	logentry.Infof("downloading msg attachment, using cache: %v url: %s", cache, url)
+	logentry.Infof("downloading msg attachment, using cache: %v", cache)
 
-	att, err = source.connection.Download(msg, cache, url)
+	att, err = source.connection.Download(msg, cache)
 	if err != nil {
 		return
 	}

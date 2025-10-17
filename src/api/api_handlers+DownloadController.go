@@ -58,10 +58,7 @@ func DownloadController(w http.ResponseWriter, r *http.Request) {
 	// Default parameters
 	cache := GetCache(r)
 
-	// Default parameters
-	url := GetUrl(r)
-
-	att, err := server.Download(messageid, cache, url)
+	att, err := server.Download(messageid, cache)
 	if err != nil {
 		response.ParseError(err)
 		RespondInterface(w, response)

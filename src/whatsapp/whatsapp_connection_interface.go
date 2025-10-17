@@ -22,10 +22,10 @@ type IWhatsappConnection interface {
 	UpdatePairedCallBack(func(string))
 
 	// Download message attachment if exists
-	DownloadData(IWhatsappMessage, string) ([]byte, error)
+	DownloadData(IWhatsappMessage) ([]byte, error)
 
 	// Download message attachment if exists and informations
-	Download(IWhatsappMessage, bool, string) (*WhatsappAttachment, error)
+	Download(IWhatsappMessage, bool) (*WhatsappAttachment, error)
 
 	Revoke(IWhatsappMessage) error
 
