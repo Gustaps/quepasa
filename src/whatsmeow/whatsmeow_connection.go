@@ -112,30 +112,6 @@ func (source *WhatsmeowConnection) DownloadData(imsg whatsapp.IWhatsappMessage) 
 		if downloadable != nil {
 			logentry.Trace("waMsg implements DownloadableMessage, using Client.Download()")
 			return source.Client.Download(context.Background(), downloadable)
-		} else {
-
-			switch {
-			case waMsg.ImageMessage != nil:
-				replaced := strings.Replace(*waMsg.ImageMessage.URL, "mmg", "web", 1)
-				waMsg.ImageMessage.URL = &replaced
-			case waMsg.VideoMessage != nil:
-				replaced := strings.Replace(*waMsg.VideoMessage.URL, "mmg", "web", 1)
-				waMsg.VideoMessage.URL = &replaced
-			case waMsg.AudioMessage != nil:
-				replaced := strings.Replace(*waMsg.AudioMessage.URL, "mmg", "web", 1)
-				waMsg.AudioMessage.URL = &replaced
-			case waMsg.DocumentMessage != nil:
-				replaced := strings.Replace(*waMsg.DocumentMessage.URL, "mmg", "web", 1)
-				waMsg.DocumentMessage.URL = &replaced
-			case waMsg.StickerMessage != nil:
-				replaced := strings.Replace(*waMsg.StickerMessage.URL, "mmg", "web", 1)
-				waMsg.StickerMessage.URL = &replaced
-			}
-			downloadable = GetDownloadableMessage(waMsg)
-			if downloadable != nil {
-				logentry.Trace("waMsg implements DownloadableMessage, using Client.Download()")
-				return source.Client.Download(context.Background(), downloadable)
-			}
 		}
 	}
 
