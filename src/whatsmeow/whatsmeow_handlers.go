@@ -522,16 +522,15 @@ func (handler *WhatsmeowHandlers) Message(evt events.Message, from string) {
 
 	// Log message classification for debugging
 	if isFromHistory {
-		// reason := "unknown"
-		// if from == "history" {
-		//	reason = "explicit history flag"
-		//} else if handler.offlineSyncStarted && !handler.offlineSyncCompleted {
-		//	reason = "offline sync period (OfflineSyncPreview to OfflineSyncCompleted)"
-		//}
+		reason := "unknown"
+		if from == "history" {
+			reason = "explicit history flag"
+		} else if handler.offlineSyncStarted && !handler.offlineSyncCompleted {
+			reason = "offline sync period (OfflineSyncPreview to OfflineSyncCompleted)"
+		}
 
-		// logentry.Debugf("processing history message: %s, timestamp: %v, reason: %s, offline_sync_active: %v",
-		//	message.Id, message.Timestamp, reason, handler.offlineSyncStarted && !handler.offlineSyncCompleted)
-		return // por hora vamos ignorar as mensagens de historico pois estao inundando os servicos e causando timeout
+		logentry.Debugf("processing history message: %s, timestamp: %v, reason: %s, offline_sync_active: %v",
+			message.Id, message.Timestamp, reason, handler.offlineSyncStarted && !handler.offlineSyncCompleted)
 	} else {
 		logentry.Debugf("processing real-time message: %s, timestamp: %v, offline_sync_active: %v",
 			message.Id, message.Timestamp, handler.offlineSyncStarted && !handler.offlineSyncCompleted)
