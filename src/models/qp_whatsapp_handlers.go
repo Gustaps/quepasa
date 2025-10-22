@@ -112,7 +112,7 @@ func (source *QPWhatsappHandlers) Receipt(msg *whatsapp.WhatsappMessage) {
 	// should implement a better method for that !!!!
 
 	// triggering external publishers
-	source.Trigger(msg)
+	source.Trigger(msg, "receipt")
 }
 
 //endregion
@@ -196,7 +196,7 @@ func (source *QPWhatsappHandlers) appendMsgToCache(msg *whatsapp.WhatsappMessage
 		length := ENV.CacheLength()
 		source.QpWhatsappMessages.CleanUp(length)
 
-		source.Trigger(msg)
+		source.Trigger(msg, from)
 	}
 }
 
@@ -208,7 +208,7 @@ func (source *QPWhatsappHandlers) GetById(id string) (*whatsapp.WhatsappMessage,
 // region EVENT HANDLER TO INTERNAL USE, GENERALLY TO WEBHOOK
 
 // sends the message throw external publishers
-func (source *QPWhatsappHandlers) Trigger(payload *whatsapp.WhatsappMessage) {
+func (source *QPWhatsappHandlers) Trigger(payload *whatsapp.WhatsappMessage, from string) {
 	// If the source is nil, we cannot proceed with dispatching the message.
 	// This is a safeguard to prevent nil pointer dereference errors.
 	if source == nil {
@@ -231,10 +231,12 @@ func (source *QPWhatsappHandlers) Trigger(payload *whatsapp.WhatsappMessage) {
 	}
 
 	if rabbitmq.RabbitMQClientInstance != nil {
-		// This is done in a new goroutine to ensure the publishing process
-		// doesn't block the execution of the calling function, allowing for
-		// non-blocking message processing.
-		go rabbitmq.RabbitMQClientInstance.PublishMessage(payload)
+    	if from != "live" {
+            // This is done in a new goroutine to ensure the publishing process
+            // doesn't block the execution of the calling function, allowing for
+            // non-blocking message processing.
+            go rabbitmq.RabbitMQClientInstance.PublishMessage(payload)
+        }
 	}
 
 	if source.server != nil {
@@ -242,9 +244,11 @@ func (source *QPWhatsappHandlers) Trigger(payload *whatsapp.WhatsappMessage) {
 		go SignalRHub.Dispatch(source.server.Token, payload)
 	}
 
-	for _, handler := range source.aeh {
-		go handler.HandleWebHook(payload)
-	}
+	if from == "live" {
+        for _, handler := range source.aeh {
+            go handler.HandleWebHook(payload)
+        }
+    }
 }
 
 // Register an event handler that triggers on a new message received on cache
