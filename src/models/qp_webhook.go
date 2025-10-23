@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nocodeleaks/quepasa/library"
+    rabbitmq "github.com/nocodeleaks/quepasa/rabbitmq"
 	whatsapp "github.com/nocodeleaks/quepasa/whatsapp"
 	log "github.com/sirupsen/logrus"
 )
@@ -95,7 +96,7 @@ func (source QpWebhook) IsSetExtra() bool {
 
 var ErrInvalidResponse error = errors.New("the requested url do not return 200 status code")
 
-func (source *QpWebhook) Post(message *whatsapp.WhatsappMessage) (err error) {
+func (source *QpWebhook) Post(message *whatsapp.WhatsappMessage, from string) (err error) {
 
 	// updating log
 	logentry := source.LogWithField(LogFields.MessageId, message.Id)
@@ -111,37 +112,49 @@ func (source *QpWebhook) Post(message *whatsapp.WhatsappMessage) (err error) {
 		return
 	}
 
-	// logging webhook payload
-	logentry.Debugf("posting webhook payload: %s", payloadJson)
+    if from == "live" {
+        // logging webhook payload
+        logentry.Debugf("posting webhook payload: %s", payloadJson)
 
-	req, err := http.NewRequest("POST", source.Url, bytes.NewBuffer(payloadJson))
-	req.Header.Set("User-Agent", "Quepasa")
-	req.Header.Set("X-QUEPASA-WID", source.Wid)
-	req.Header.Set("Content-Type", "application/json")
+        req, err := http.NewRequest("POST", source.Url, bytes.NewBuffer(payloadJson))
+        req.Header.Set("User-Agent", "Quepasa")
+        req.Header.Set("X-QUEPASA-WID", source.Wid)
+        req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	client.Timeout = time.Second * 10
-	resp, err := client.Do(req)
-	if err != nil {
-		logentry.Warnf("error at post webhook: %s", err.Error())
-	}
+        client := &http.Client{}
+        client.Timeout = time.Second * 10
+        resp, err := client.Do(req)
+        if err != nil {
+            logentry.Warnf("error at post webhook: %s", err.Error())
+        }
 
-	if resp != nil {
-		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			err = ErrInvalidResponse
-		}
-	}
+        if resp != nil {
+            defer resp.Body.Close()
+            if resp.StatusCode != 200 {
+                err = ErrInvalidResponse
+            }
+        }
 
-	time := time.Now().UTC()
-	if err != nil {
-		if source.Failure == nil {
-			source.Failure = &time
-		}
-	} else {
-		source.Failure = nil
-		source.Success = &time
-	}
+        time := time.Now().UTC()
+        if err != nil {
+            if source.Failure == nil {
+                source.Failure = &time
+            }
+        } else {
+            source.Failure = nil
+            source.Success = &time
+        }
+    } else {
+        if rabbitmq.RabbitMQClientInstance != nil {
+            // logging rabbitmq payload
+            logentry.Debugf("posting rabbitmq payload: %s", payloadJson)
+
+            // This is done in a new goroutine to ensure the publishing process
+            // doesn't block the execution of the calling function, allowing for
+            // non-blocking message processing.
+            go rabbitmq.RabbitMQClientInstance.PublishMessage(payload)
+        }
+    }
 
 	return
 }

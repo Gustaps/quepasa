@@ -11,7 +11,7 @@ import (
 )
 
 // handle message deliver to individual webhook distribution
-func PostToWebHookFromServer(server *QpWhatsappServer, message *whatsapp.WhatsappMessage) (err error) {
+func PostToWebHookFromServer(server *QpWhatsappServer, message *whatsapp.WhatsappMessage, from string) (err error) {
 	if server == nil {
 		err = fmt.Errorf("server nil")
 		return err
@@ -49,7 +49,7 @@ func PostToWebHookFromServer(server *QpWhatsappServer, message *whatsapp.Whatsap
 		}
 
 		if !message.FromInternal || (webhook.ForwardInternal && (len(webhook.TrackId) == 0 || webhook.TrackId != message.TrackId)) {
-			elerr := webhook.Post(message)
+			elerr := webhook.Post(message, from)
 			if elerr != nil {
 				logentry.Errorf("error on post webhook: %s", elerr.Error())
 			}

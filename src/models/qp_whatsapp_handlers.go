@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	library "github.com/nocodeleaks/quepasa/library"
-	rabbitmq "github.com/nocodeleaks/quepasa/rabbitmq"
 	whatsapp "github.com/nocodeleaks/quepasa/whatsapp"
 )
 
@@ -230,24 +229,13 @@ func (source *QPWhatsappHandlers) Trigger(payload *whatsapp.WhatsappMessage, fro
 		return
 	}
 
-	if rabbitmq.RabbitMQClientInstance != nil {
-    	if from != "live" {
-            // This is done in a new goroutine to ensure the publishing process
-            // doesn't block the execution of the calling function, allowing for
-            // non-blocking message processing.
-            go rabbitmq.RabbitMQClientInstance.PublishMessage(payload)
-        }
-	}
-
 	if source.server != nil {
 		payload.Wid = source.GetWId()
 		go SignalRHub.Dispatch(source.server.Token, payload)
 	}
 
-	if from == "live" {
-        for _, handler := range source.aeh {
-            go handler.HandleWebHook(payload)
-        }
+    for _, handler := range source.aeh {
+        go handler.HandleWebHook(payload, from)
     }
 }
 
