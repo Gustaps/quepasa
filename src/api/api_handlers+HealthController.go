@@ -13,6 +13,14 @@ import (
 
 // BasicHealthController - Simple health check without authentication
 // Returns 200 OK if the application is running
+//
+//	@Summary		Health check
+//	@Description	Basic health check endpoint to verify if the application is running
+//	@Tags			Health
+//	@Produce		json
+//	@Success		200	{object}	api.HealthResponse
+//	@Security		ApiKeyAuth
+//	@Router			/health [get]
 func BasicHealthController(w http.ResponseWriter, r *http.Request) {
 	response := &api.HealthResponse{
 		QpResponse: models.QpResponse{
@@ -20,6 +28,7 @@ func BasicHealthController(w http.ResponseWriter, r *http.Request) {
 			Status:  "application is running",
 		},
 		Timestamp: time.Now(),
+		Version:   models.QpVersion,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -27,9 +36,20 @@ func BasicHealthController(w http.ResponseWriter, r *http.Request) {
 	RespondInterface(w, response)
 }
 
+// HealthController provides detailed health check with authentication support
+//
+//	@Summary		Detailed health check
+//	@Description	Provides detailed health information for WhatsApp servers with authentication support
+//	@Tags			Health
+//	@Produce		json
+//	@Success		200	{object}	api.HealthResponse
+//	@Router			/healthapi [get]
 func HealthController(w http.ResponseWriter, r *http.Request) {
 
-	response := &api.HealthResponse{Timestamp: time.Now()}
+	response := &api.HealthResponse{
+		Timestamp: time.Now(),
+		Version:   models.QpVersion,
+	}
 
 	master := IsMatchForMaster(r)
 	if master {

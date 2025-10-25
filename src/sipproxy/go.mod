@@ -1,5 +1,27 @@
 module github.com/nocodeleaks/quepasa/sipproxy
 
+replace github.com/nocodeleaks/quepasa/api => ../api
+
+replace github.com/nocodeleaks/quepasa/form => ../form
+
+replace github.com/nocodeleaks/quepasa/media => ../media
+
+replace github.com/nocodeleaks/quepasa/metrics => ../metrics
+
+replace github.com/nocodeleaks/quepasa/models => ../models
+
+replace github.com/nocodeleaks/quepasa/rabbitmq => ../rabbitmq
+
+replace github.com/nocodeleaks/quepasa/signalr => ../signalr
+
+replace github.com/nocodeleaks/quepasa/sipproxy => ../sipproxy
+
+replace github.com/nocodeleaks/quepasa/swagger => ../swagger
+
+replace github.com/nocodeleaks/quepasa/webserver => ../webserver
+
+replace github.com/nocodeleaks/quepasa/whatsmeow => ../whatsmeow
+
 go 1.24.0
 
 toolchain go1.24.2
@@ -19,7 +41,7 @@ require (
 )
 
 require (
-	github.com/go-chi/chi/v5 v5.2.2 // indirect
+	github.com/go-chi/chi/v5 v5.2.3 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.3.2 // indirect

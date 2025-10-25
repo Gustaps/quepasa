@@ -33,12 +33,13 @@ src/main
 src/service
 
 # database files
-src/*.db
-src/*.sqlite
-src/*.sqlite-journal
+*.db
+*.sqlite
+*.sqlite-journal
 
 # production or testing directory
 src/.dist/
+.dist/
 
 # symbolic link to src folder under linux
 quepasa/

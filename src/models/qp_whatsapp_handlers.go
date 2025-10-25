@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	library "github.com/nocodeleaks/quepasa/library"
+	rabbitmq "github.com/nocodeleaks/quepasa/rabbitmq"
+	signalr "github.com/nocodeleaks/quepasa/signalr"
 	whatsapp "github.com/nocodeleaks/quepasa/whatsapp"
 )
 
@@ -20,7 +23,7 @@ type QPWhatsappHandlers struct {
 	syncRegister *sync.Mutex
 
 	// Appended events handler
-	aeh []QpWebhookHandlerInterface
+	aeh []QpDispatchingHandlerInterface
 }
 
 // Returns whatsapp controller id on E164
@@ -229,18 +232,35 @@ func (source *QPWhatsappHandlers) Trigger(payload *whatsapp.WhatsappMessage, fro
 		return
 	}
 
+	// Update last message/event timestamps
+	if source.server != nil {
+		currentTime := time.Now().UTC()
+
+		// Check if this is an event (system messages, unhandled messages, or read receipts)
+		isEvent := payload.Type == whatsapp.UnhandledMessageType ||
+			payload.Type == whatsapp.SystemMessageType ||
+			payload.Id == "readreceipt"
+
+		if isEvent {
+			source.server.Timestamps.Event = &currentTime
+		} else {
+			// Regular message content (text, image, audio, video, etc.) - received messages only
+			source.server.Timestamps.Message = &currentTime
+		}
+	}
+
 	if source.server != nil {
 		payload.Wid = source.GetWId()
-		go SignalRHub.Dispatch(source.server.Token, payload)
+		go signalr.SignalRHub.Dispatch(source.server.Token, payload)
 	}
 
     for _, handler := range source.aeh {
-        go handler.HandleWebHook(payload, from)
+        go handler.HandleDispatching(payload, from)
     }
 }
 
 // Register an event handler that triggers on a new message received on cache
-func (handler *QPWhatsappHandlers) Register(evt QpWebhookHandlerInterface) {
+func (handler *QPWhatsappHandlers) Register(evt QpDispatchingHandlerInterface) {
 	handler.syncRegister.Lock() // await for avoid simultaneous calls
 
 	if !handler.IsRegistered(evt) {
@@ -251,13 +271,13 @@ func (handler *QPWhatsappHandlers) Register(evt QpWebhookHandlerInterface) {
 }
 
 // Removes an specific event handler
-func (handler *QPWhatsappHandlers) UnRegister(evt QpWebhookHandlerInterface) {
+func (handler *QPWhatsappHandlers) UnRegister(evt QpDispatchingHandlerInterface) {
 	handler.syncRegister.Lock() // await for avoid simultaneous calls
 
-	newHandlers := []QpWebhookHandlerInterface{}
+	newHandlers := []QpDispatchingHandlerInterface{}
 	for _, v := range handler.aeh {
 		if v != evt {
-			newHandlers = append(handler.aeh, evt)
+			newHandlers = append(newHandlers, v)
 		}
 	}
 
